@@ -42,7 +42,9 @@ class Employee extends Model
     public static function generateEmployeeCode(): string
     {
         $year = Carbon::now()->format('Y');
-        $last = static::where('employee_code', 'like', "EMP-$year-%")
+        // employee_code is unique centre-wide, so the sequence ignores the campus filter.
+        $last = static::withoutGlobalScopes()
+            ->where('employee_code', 'like', "EMP-$year-%")
             ->orderByDesc('employee_code')
             ->value('employee_code');
         $seq = $last ? ((int) substr($last, -4)) + 1 : 1;

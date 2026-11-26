@@ -284,7 +284,8 @@ class InvoiceController extends Controller
     private function nextNumber(): string
     {
         $prefix = 'INV-' . now()->format('Y') . '-';
-        $last = Invoice::where('invoice_number', 'like', $prefix . '%')->max('invoice_number');
+        // invoice_number is unique centre-wide, so the sequence ignores the campus filter.
+        $last = Invoice::withoutGlobalScopes()->where('invoice_number', 'like', $prefix . '%')->max('invoice_number');
         $seq = $last ? ((int) substr($last, strlen($prefix))) + 1 : 1;
 
         return $prefix . str_pad((string) $seq, 4, '0', STR_PAD_LEFT);

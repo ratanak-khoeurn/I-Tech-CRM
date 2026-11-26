@@ -9,6 +9,7 @@ use App\Models\User;
 use App\Support\CampusContext;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
@@ -43,7 +44,8 @@ class UserController extends Controller
         return view('settings.user-form', [
             'user' => new User(['is_active' => true]),
             'roles' => $this->assignableRoles(),
-            'campuses' => Campus::orderBy('name')->get(),
+            'campuses' => CampusContext::manageableCampuses(),
+            'selectedCampusIds' => array_map('intval', (array) old('campus_ids', [])),
             'campusBoundRoleIds' => $this->campusBoundRoleIds(),
         ]);
     }
@@ -121,14 +123,37 @@ class UserController extends Controller
     {
         abort_unless(CampusContext::allowsManagingUser($user), 403);
 
-        $user->load('campuses');
+        // Read the pivot instead of the relation: the campus scope narrows to the campus
+        // currently selected, and an assignment outside it must still render as ticked,
+        // or saving this form would silently drop that campus.
+        $choices = CampusContext::manageableCampuses();
 
         return view('settings.user-form', [
             'user' => $user,
             'roles' => $this->assignableRoles(),
-            'campuses' => Campus::orderBy('name')->get(),
+            'campuses' => $choices,
+            'selectedCampusIds' => $this->selectedCampusIds($user, $choices),
             'campusBoundRoleIds' => $this->campusBoundRoleIds(),
         ]);
+    }
+
+    /**
+     * @param  \Illuminate\Support\Collection<int, Campus>  $choices
+     * @return list<int>
+     */
+    private function selectedCampusIds(User $user, $choices): array
+    {
+        if (old('campus_ids') !== null) {
+            return array_map('intval', (array) old('campus_ids'));
+        }
+
+        $assigned = array_map(
+            fn ($id) => (int) $id,
+            DB::table('campus_user')->where('user_id', $user->id)->pluck('campus_id')->all()
+        );
+        $allowed = array_map(fn ($id) => (int) $id, $choices->pluck('id')->all());
+
+        return array_values(array_intersect($assigned, $allowed));
     }
 
     /**
@@ -333,7 +358,7 @@ class UserController extends Controller
             ->values()
             ->all();
 
-        $visible = CampusContext::visibleIds();
+        $visible = CampusContext::assignedIds();
 
         return $visible === null ? $ids : array_values(array_intersect($ids, $visible));
     }
@@ -368,7 +393,7 @@ class UserController extends Controller
 
     private function campusIdRules(): array
     {
-        $visible = CampusContext::visibleIds();
+        $visible = CampusContext::assignedIds();
 
         return $visible === null
             ? ['integer', 'exists:campuses,id']

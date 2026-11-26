@@ -218,7 +218,8 @@ class CampusController extends Controller
 
         $request->session()->put(CampusContext::SESSION_KEY, (int) $value);
 
-        return back()->with('success', 'Switched to ' . Campus::whereKey($value)->value('name') . '.');
+        return back()->with('success', 'Switched to '
+            . Campus::withoutGlobalScopes()->whereKey($value)->value('name') . '.');
     }
 
     /**

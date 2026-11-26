@@ -100,7 +100,8 @@ class Invoice extends Model
     public static function nextNumber(): string
     {
         $prefix = 'INV-' . now()->format('Y') . '-';
-        $last = static::where('invoice_number', 'like', $prefix . '%')->max('invoice_number');
+        // invoice_number is unique centre-wide, so the sequence ignores the campus filter.
+        $last = static::withoutGlobalScopes()->where('invoice_number', 'like', $prefix . '%')->max('invoice_number');
         $seq = $last ? ((int) substr($last, strlen($prefix))) + 1 : 1;
 
         return $prefix . str_pad((string) $seq, 4, '0', STR_PAD_LEFT);

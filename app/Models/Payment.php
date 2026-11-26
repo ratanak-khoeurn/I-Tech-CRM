@@ -2,6 +2,8 @@
 
 namespace App\Models;
 
+use App\Support\CampusContext;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
@@ -23,6 +25,15 @@ class Payment extends Model
         'payment_date' => 'date',
         'amount' => 'decimal:2',
     ];
+
+    protected static function booted(): void
+    {
+        // A payment has no campus of its own: it belongs to whichever campus the student
+        // behind its invoice works in, so finance totals never mix campuses.
+        static::addGlobalScope('campus', function (Builder $query) {
+            CampusContext::whereVisibleInvoice($query);
+        });
+    }
 
     public function invoice(): BelongsTo
     {

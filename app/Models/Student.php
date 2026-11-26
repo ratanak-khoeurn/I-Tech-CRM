@@ -106,7 +106,9 @@ class Student extends Model
     public static function generateStudentCode(): string
     {
         $year = Carbon::now()->format('Y');
-        $last = static::withTrashed()
+        // Scoped out on purpose: student_code is unique across the whole centre, so the
+        // sequence must not restart at a campus the signed-in account is filtered to.
+        $last = static::withoutGlobalScopes()
             ->where('student_code', 'like', "STU-$year-%")
             ->orderByDesc('student_code')
             ->value('student_code');

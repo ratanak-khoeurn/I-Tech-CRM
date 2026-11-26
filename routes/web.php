@@ -69,6 +69,7 @@ Route::middleware('auth')->group(function () {
     Route::get('students/import', [StudentController::class, 'importForm'])->middleware('role:super_admin,admin,staff')->name('students.import.form');
     Route::post('students/import', [StudentController::class, 'import'])->middleware('role:super_admin,admin,staff')->name('students.import');
     Route::post('students/bulk-assign', [StudentController::class, 'bulkAssign'])->middleware('role:super_admin,admin')->name('students.bulk-assign');
+    Route::post('students/bulk-campus', [StudentController::class, 'bulkCampus'])->middleware('role:super_admin,admin')->name('students.bulk-campus');
     Route::get('student-change-requests', [StudentController::class, 'changeRequests'])->middleware('role:super_admin,admin')->name('student-change-requests.index');
     Route::patch('student-change-requests/{changeRequest}', [StudentController::class, 'reviewChangeRequest'])->middleware('role:super_admin,admin')->name('student-change-requests.review');
     Route::post('students/{student}/restore', [StudentController::class, 'restore'])->middleware('role:super_admin,admin,staff')->name('students.restore');

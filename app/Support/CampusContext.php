@@ -2,6 +2,8 @@
 
 namespace App\Support;
 
+use App\Models\Campus;
+use App\Models\Invoice;
 use App\Models\Student;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
@@ -19,8 +21,9 @@ use Illuminate\Validation\Rule;
  * - portal roles (student) are not campus-bound at all; their access is decided by
  *   the owning-record checks in the controllers.
  *
- * The session "campus_id" value is only ever a *drill-down* inside that boundary —
- * the boundary itself is enforced by the model scopes, not by this key.
+ * The session "campus_id" value is a drill-down inside that boundary. It never grants
+ * access to a campus the account is not assigned to, but while it points at one campus
+ * every read is narrowed to it, so a page shows a single campus instead of a mix.
  */
 class CampusContext
 {
@@ -28,8 +31,15 @@ class CampusContext
 
     public const ALL = 'all';
 
+    /** @var array<int|string, list<int>|null> */
+    private static array $assignedCache = [];
+
     /**
      * The campuses this account may work in, or null when it may work in all of them.
+     *
+     * This is the security boundary: it only depends on the pivot, never on the
+     * campus picked in the switcher, so authorising a write cannot be widened or
+     * narrowed by a session value.
      *
      * Reads the pivot with the query builder on purpose: User::campusIds() goes
      * through the campuses relation, and the Campus model carries a global scope that
@@ -37,36 +47,61 @@ class CampusContext
      *
      * @return list<int>|null
      */
-    public static function visibleIds(?User $user = null): ?array
+    public static function assignedIds(?User $user = null): ?array
     {
         $user = $user ?: (Auth::check() ? Auth::user() : null);
+        $key = $user ? $user->id : 'guest';
 
-        if (!$user || !$user->hasRole('super_admin', 'admin', 'staff')) {
-            return null;
+        if (array_key_exists($key, self::$assignedCache)) {
+            return self::$assignedCache[$key];
         }
 
-        if ($user->isSuperAdmin()) {
-            return null;
+        if (!$user || !$user->hasRole('super_admin', 'admin', 'staff') || $user->isSuperAdmin()) {
+            return self::$assignedCache[$key] = null;
         }
 
-        return array_map(
+        return self::$assignedCache[$key] = array_map(
             fn ($id) => (int) $id,
             DB::table('campus_user')->where('user_id', $user->id)->pluck('campus_id')->all()
         );
     }
 
+    /**
+     * The campus set every read path must use: the boundary, narrowed to the campus
+     * currently selected in the switcher. null still means unrestricted.
+     *
+     * @return list<int>|null
+     */
+    public static function visibleIds(?User $user = null): ?array
+    {
+        $assigned = self::assignedIds($user);
+        $user = $user ?: (Auth::check() ? Auth::user() : null);
+
+        if (!$user) {
+            return $assigned;
+        }
+
+        $selected = self::current($user);
+
+        if ($selected === null) {
+            return $assigned;
+        }
+
+        return $assigned === null || in_array($selected, $assigned, true) ? [$selected] : $assigned;
+    }
+
     /** Whether this account is limited to a set of campuses. */
     public static function isBounded(?User $user = null): bool
     {
-        return self::visibleIds($user) !== null;
+        return self::assignedIds($user) !== null;
     }
 
     /** Whether this account may touch data of one campus (null = unassigned data). */
     public static function allows(?int $campusId, ?User $user = null): bool
     {
-        $visible = self::visibleIds($user);
+        $assigned = self::assignedIds($user);
 
-        return $visible === null || ($campusId !== null && in_array($campusId, $visible, true));
+        return $assigned === null || ($campusId !== null && in_array($campusId, $assigned, true));
     }
 
     /** 403 when the account may not work in that campus. */
@@ -114,6 +149,25 @@ class CampusContext
         return $query;
     }
 
+    /**
+     * Apply the boundary through the invoice a money record belongs to, so a payment
+     * follows the campus of the student it was collected from.
+     *
+     * @template T of Builder
+     * @param  T  $query
+     * @return T
+     */
+    public static function whereVisibleInvoice(Builder $query, string $column = 'invoice_id'): Builder
+    {
+        if (self::visibleIds() === null) {
+            return $query;
+        }
+
+        $query->whereIn($column, Invoice::query()->select('id'));
+
+        return $query;
+    }
+
     /** Campus ids this user may pick from in a switcher, login form or filter. */
     public static function assignable(User $user): array
     {
@@ -121,13 +175,33 @@ class CampusContext
             return [];
         }
 
-        $visible = self::visibleIds($user);
+        $assigned = self::assignedIds($user);
 
-        if ($visible === null) {
+        if ($assigned === null) {
             return array_map(fn ($id) => (int) $id, DB::table('campuses')->orderBy('name')->pluck('id')->all());
         }
 
-        return $visible;
+        return $assigned;
+    }
+
+    /**
+     * Campus rows to offer in a switcher or a staff-account form.
+     *
+     * Deliberately ignores the drill-down selection: without every assigned campus in
+     * the list, picking one would make the other ones unreachable.
+     *
+     * @return \Illuminate\Support\Collection<int, \App\Models\Campus>
+     */
+    public static function manageableCampuses(?User $user = null, bool $activeOnly = false)
+    {
+        $user = $user ?: (Auth::check() ? Auth::user() : null);
+        $ids = $user ? self::assignable($user) : null;
+
+        return Campus::withoutGlobalScopes()
+            ->when($ids !== null, fn ($query) => $query->whereIn('id', $ids))
+            ->when($activeOnly, fn ($query) => $query->where('is_active', true))
+            ->orderBy('name')
+            ->get();
     }
 
     /**
@@ -154,7 +228,7 @@ class CampusContext
 
         // A campus-bound account always works inside one campus; the all-campus
         // account only drills down when it explicitly picks one.
-        return self::visibleIds($user) === null ? null : ($ids[0] ?? null);
+        return self::assignedIds($user) === null ? null : ($ids[0] ?? null);
     }
 
     /** Whether the top-bar switcher is worth showing for this user. */
@@ -186,7 +260,7 @@ class CampusContext
      */
     public static function manageableRoleIds(?User $user = null): ?array
     {
-        if (self::visibleIds($user) === null) {
+        if (self::assignedIds($user) === null) {
             return null;
         }
 
@@ -200,21 +274,24 @@ class CampusContext
      * Restrict a users query to the accounts a campus-scoped admin may manage:
      * staff and campus admins who share at least one campus with them.
      *
+     * Uses the assignment boundary, not the selected campus, so drilling into one
+     * campus never hides the other accounts this admin still has to look after.
+     *
      * @template T of Builder
      * @param  T  $query
      * @return T
      */
     public static function constrainUsers(Builder $query): Builder
     {
-        $visible = self::visibleIds();
+        $assigned = self::assignedIds();
 
-        if ($visible === null) {
+        if ($assigned === null) {
             return $query;
         }
 
         $query->whereIn('role_id', self::manageableRoleIds())
-            ->whereIn('id', function ($sub) use ($visible) {
-                $sub->select('user_id')->from('campus_user')->whereIn('campus_id', $visible);
+            ->whereIn('id', function ($sub) use ($assigned) {
+                $sub->select('user_id')->from('campus_user')->whereIn('campus_id', $assigned);
             });
 
         return $query;
@@ -223,9 +300,9 @@ class CampusContext
     /** Whether the signed-in account may edit or delete this account. */
     public static function allowsManagingUser(User $target): bool
     {
-        $visible = self::visibleIds();
+        $assigned = self::assignedIds();
 
-        if ($visible === null) {
+        if ($assigned === null) {
             return true;
         }
 
@@ -237,33 +314,35 @@ class CampusContext
 
         return DB::table('campus_user')
             ->where('user_id', $target->id)
-            ->whereIn('campus_id', $visible)
+            ->whereIn('campus_id', $assigned)
             ->exists();
     }
 
     /**
-     * The campus a list page should filter by: an explicit selection in the request
-     * wins, but only when it is inside the account's boundary; otherwise the user's
-     * active campus is the default.
+     * The campus a list page should filter by.
+     *
+     * When the account is narrowed to one campus that campus is always the filter, so a
+     * hand-written query string cannot widen the page. Otherwise an explicit selection
+     * inside the boundary wins, and anything else falls back to the active campus.
      */
     public static function filterFor(Request $request): ?int
     {
-        if ($request->has(self::SESSION_KEY)) {
-            $value = $request->input(self::SESSION_KEY);
-
-            if ($value === self::ALL) {
-                return null;
-            }
-
-            if (is_numeric($value) && self::allows((int) $value)) {
-                return (int) $value;
-            }
-
-            // Anything else (blank, unknown or outside the boundary) falls back to the
-            // account's own default so a list never shows an empty other-campus filter.
-        }
-
         $user = $request->user() ?? Auth::user();
+        $visible = self::visibleIds($user);
+
+        if ($visible === null || count($visible) > 1) {
+            if ($request->has(self::SESSION_KEY)) {
+                $value = $request->input(self::SESSION_KEY);
+
+                if ($value === self::ALL) {
+                    return null;
+                }
+
+                if (is_numeric($value) && self::allows((int) $value)) {
+                    return (int) $value;
+                }
+            }
+        }
 
         return $user ? self::current($user) : null;
     }
@@ -275,16 +354,16 @@ class CampusContext
      */
     public static function campusRules(bool $required = true): array
     {
-        $visible = self::visibleIds();
+        $assigned = self::assignedIds();
 
-        if ($visible === null) {
+        if ($assigned === null) {
             return $required
                 ? ['required', 'integer', 'exists:campuses,id']
                 : ['nullable', 'integer', 'exists:campuses,id'];
         }
 
         return $required
-            ? ['required', 'integer', Rule::in($visible)]
-            : ['nullable', 'integer', Rule::in($visible)];
+            ? ['required', 'integer', Rule::in($assigned)]
+            : ['nullable', 'integer', Rule::in($assigned)];
     }
 }

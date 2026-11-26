@@ -299,7 +299,7 @@
     <div class="text-muted small">
         @if(auth()->user()->isAdmin())
             <button type="button" class="btn btn-outline-primary btn-sm rounded-pill px-3" id="bulkAssignBtn" disabled>
-                <i class="bi bi-person-gear me-1"></i>Bulk Assign to Staff
+                <i class="bi bi-person-gear me-1"></i>Bulk Actions
             </button>
         @endif
     </div>
@@ -470,6 +470,11 @@
                                 <i class="bi bi-people"></i>
                                 <p class="mb-1">No students found</p>
                                 <p class="small">Try adjusting filters, or @if(auth()->user()->canManageStudents())<a href="{{ route('students.create') }}">add a new student</a> / <a href="{{ route('students.import.form') }}">import from CSV</a>.@else contact an administrator. @endif</p>
+                                @if (\App\Support\CampusContext::current(auth()->user()) !== null && count(\App\Support\CampusContext::assignable(auth()->user())) > 1)
+                                    <p class="small text-muted mb-0">Students that were never given a campus are listed only in the all-campus view. Switch the
+                                        campus picker to {{ \App\Support\CampusContext::isBounded() ? 'All my campuses' : 'All campuses' }}, tick them and use
+                                        <strong>Bulk Set Campus</strong> to move them here.</p>
+                                @endif
                             </div>
                         </td></tr>
                     @endforelse
@@ -529,20 +534,31 @@
     @csrf
     <input type="hidden" name="staff_id" id="bulkStaffId">
 </form>
+<form method="POST" action="{{ route('students.bulk-campus') }}" id="bulkCampusForm" class="d-none">
+    @csrf
+    <input type="hidden" name="campus_id" id="bulkCampusId">
+</form>
 
 <div class="modal fade" id="bulkAssignModal" tabindex="-1">
     <div class="modal-dialog modal-sm">
         <div class="modal-content">
-            <div class="modal-header"><h5 class="modal-title">Bulk Assign Staff</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-header"><h5 class="modal-title">Bulk Actions</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
             <div class="modal-body">
                 <p class="small text-muted">Assign <span id="bulkCount" class="fw-bold">0</span> selected student(s) to:</p>
                 <select class="form-select form-select-sm" id="bulkStaffSelect">
                     <option value="">— Select staff —</option>
                     @foreach($staff as $s)<option value="{{ $s->id }}">{{ $s->name }} ({{ $s->role?->display_name }})</option>@endforeach
                 </select>
+                <hr class="my-3">
+                <p class="small text-muted">…or move them to this campus:</p>
+                <select class="form-select form-select-sm" id="bulkCampusSelect">
+                    <option value="">— Select campus —</option>
+                    @foreach($campuses as $c)<option value="{{ $c->id }}">{{ $c->name }}</option>@endforeach
+                </select>
             </div>
             <div class="modal-footer">
                 <button class="btn btn-light btn-sm" data-bs-dismiss="modal">Cancel</button>
+                <button class="btn btn-outline-primary btn-sm" id="bulkCampusConfirm" disabled>Set campus</button>
                 <button class="btn btn-primary btn-sm" id="bulkAssignConfirm" disabled>Assign</button>
             </div>
         </div>
@@ -626,7 +642,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const refresh = () => {
         const n = document.querySelectorAll('.row-check:checked').length;
         btn.disabled = n === 0;
-        btn.innerHTML = `<i class="bi bi-person-gear me-1"></i>Bulk Assign (${n})`;
+        btn.innerHTML = `<i class="bi bi-person-gear me-1"></i>Bulk Actions (${n})`;
     };
     checkAll?.addEventListener('change', () => checks().forEach(c => c.checked = checkAll.checked) || refresh());
     checks().forEach(c => c.addEventListener('change', refresh));
@@ -642,6 +658,25 @@ document.addEventListener('DOMContentLoaded', () => {
     confirmBtn.addEventListener('click', () => {
         document.getElementById('bulkStaffId').value = sel.value;
         document.getElementById('bulkAssignForm').submit();
+    });
+
+    // The row checkboxes are bound to the staff form, so the ids are copied over here.
+    const campusSel = document.getElementById('bulkCampusSelect');
+    const campusBtn = document.getElementById('bulkCampusConfirm');
+    campusSel.addEventListener('change', () => campusBtn.disabled = !campusSel.value);
+    campusBtn.addEventListener('click', () => {
+        const form = document.getElementById('bulkCampusForm');
+        form.querySelectorAll('input[data-bulk-student]').forEach((node) => node.remove());
+        document.querySelectorAll('.row-check:checked').forEach((box) => {
+            const hidden = document.createElement('input');
+            hidden.type = 'hidden';
+            hidden.name = 'student_ids[]';
+            hidden.value = box.value;
+            hidden.dataset.bulkStudent = '1';
+            form.appendChild(hidden);
+        });
+        document.getElementById('bulkCampusId').value = campusSel.value;
+        form.submit();
     });
 });
 </script>

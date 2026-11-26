@@ -962,6 +962,9 @@ class StudentController extends Controller
         }
 
         $imported = 0; $skipped = 0; $errors = [];
+        // Every campus the account is assigned to, not just the selected one, so a
+        // multi-campus import still lands in the campus named in the file.
+        $campusChoices = CampusContext::assignable(Auth::user());
         foreach ($rows as $i => $row) {
             $line = $i + 2;
             $name = trim((string) ($row['english name'] ?? $row['name'] ?? $row['name_english'] ?? ''));
@@ -978,7 +981,13 @@ class StudentController extends Controller
                 continue;
             }
             $course = Course::where('name', 'like', trim((string) ($row['course'] ?? '')))->first();
-            $campus = Campus::where('name', 'like', trim((string) ($row['campus'] ?? '')))->first();
+            // Matched against every campus the account is assigned to, not just the one
+            // currently selected, so a multi-campus import still lands in the right campus.
+            $campusName = trim((string) ($row['campus'] ?? ''));
+            $campus = $campusName === '' || $campusChoices === [] ? null : Campus::withoutGlobalScopes()
+                ->whereIn('id', $campusChoices)
+                ->where('name', 'like', $campusName)
+                ->first();
             $gradYear = (int) ($row['graduation year'] ?? $row['graduation_year'] ?? 0) ?: null;
 
             DB::transaction(function () use ($row, $name, $phone, $email, $course, $campus, $gradYear, &$imported) {
@@ -1096,6 +1105,33 @@ class StudentController extends Controller
         AuditLog::record('bulk_assigned', 'student', null, 'Bulk assigned ' . count($data['student_ids']) . ' students to staff #' . $data['staff_id']);
 
         return back()->with('success', count($data['student_ids']) . ' student(s) assigned successfully.');
+    }
+
+    /**
+     * Move the ticked students to a campus, so the campus view actually contains them.
+     */
+    public function bulkCampus(Request $request)
+    {
+        $data = $request->validate([
+            'student_ids' => ['required', 'array', 'min:1'],
+            'student_ids.*' => ['integer'],
+            'campus_id' => CampusContext::campusRules(),
+        ]);
+
+        // The update runs through the campus scope, so a ticked student belonging to a
+        // campus outside this account is skipped instead of being moved.
+        $updated = Student::whereIn('id', $data['student_ids'])
+            ->update(['campus_id' => $data['campus_id'], 'updated_by' => Auth::id()]);
+
+        // The campus list joins enrollments, so a student whose course rows never named a
+        // campus would stay invisible in the destination view after being moved here.
+        $orphans = StudentCourse::whereIn('student_id', $data['student_ids'])
+            ->whereNull('campus_id')
+            ->update(['campus_id' => $data['campus_id']]);
+
+        AuditLog::record('bulk_campus', 'student', null, 'Moved ' . $updated . ' student(s) to campus #' . $data['campus_id'] . ' (' . $orphans . ' enrollment(s) stamped)');
+
+        return back()->with('success', $updated . ' student(s) moved to that campus.');
     }
 
     public function profileExport(Student $student)

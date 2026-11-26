@@ -186,7 +186,7 @@
                         value="{{ request('q') }}">
                 </form>
                 <div class="topbar-actions">
-                    @php($__myCampuses = \App\Models\Campus::where('is_active', true)->orderBy('name')->get())
+                    @php($__myCampuses = \App\Support\CampusContext::manageableCampuses(auth()->user(), true))
                     @php($__myActiveCampusId = \App\Support\CampusContext::current(auth()->user()))
                     @php($__showCampusSwitcher = \App\Support\CampusContext::showsSwitcher(auth()->user()))
                     @if ($__showCampusSwitcher)
@@ -210,7 +210,7 @@
                                         </form>
                                     </li>
                                 @endforeach
-                                @if ($__myCampuses->count() > 1)
+                                @if (count(\App\Support\CampusContext::assignable(auth()->user())) > 1)
                                     <li>
                                         <hr class="dropdown-divider">
                                     </li>

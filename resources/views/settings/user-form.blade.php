@@ -60,8 +60,7 @@
                 @error('role_id')<div class="invalid-feedback">{{ $message }}</div>@enderror
             </div>
             @php
-    $selectedCampusIds = collect(old('campus_ids', $user->campuses->pluck('id')->all()))
-        ->map(fn ($id) => (int) $id)->all();
+    $selectedCampusIds = array_map('intval', $selectedCampusIds ?? []);
     $campusBound = in_array((int) old('role_id', $user->role_id), array_map('intval', $campusBoundRoleIds), true);
 @endphp
 
@@ -84,7 +83,7 @@
             @endforeach
         </div>
         <div class="form-text">
-            @if (\App\Support\CampusContext::visibleIds() === null)
+            @if (\App\Support\CampusContext::assignedIds() === null)
                 Tick the campuses this account may work in. An account with none ticked
                 sees no campus data at all — only a Super Admin works across every campus.
             @else

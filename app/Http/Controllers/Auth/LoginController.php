@@ -62,7 +62,7 @@ class LoginController extends Controller
                 // outside this account's scope is dropped instead of rejecting the login.
                 $request->session()->put(CampusContext::SESSION_KEY, $assigned[0]);
                 $warning = 'That campus is not assigned to your account — opened '
-                    . Campus::whereKey($assigned[0])->value('name') . ' instead.';
+                    . Campus::withoutGlobalScopes()->whereKey($assigned[0])->value('name') . ' instead.';
             }
         } elseif (CampusContext::isBounded($user)) {
             if ($assigned !== []) {
