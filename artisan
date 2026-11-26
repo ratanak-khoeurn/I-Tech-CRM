@@ -1,0 +1,77 @@
+#!/usr/bin/env php
+<?php
+
+use Illuminate\Foundation\Application;
+use Symfony\Component\Console\Input\ArgvInput;
+
+define('LARAVEL_START', microtime(true));
+
+// Register the Composer autoloader...
+require __DIR__.'/vendor/autoload.php';
+
+// Bootstrap Laravel and handle the command...
+/** @var Application $app */
+$app = require_once __DIR__.'/bootstrap/app.php';
+
+$input = new ArgvInput;
+$faceProcess = null;
+
+if ($input->getFirstArgument() === 'serve' && is_dir(__DIR__.'/python-face/app')) {
+	$facePort = 8001;
+	$existingFaceService = @fsockopen('127.0.0.1', $facePort, $errorCode, $errorMessage, 0.2);
+
+	if (is_resource($existingFaceService)) {
+		fclose($existingFaceService);
+		fwrite(STDOUT, "Face API already listening on 127.0.0.1:{$facePort}.\n");
+	} else {
+		$pythonCandidates = PHP_OS_FAMILY === 'Windows'
+			? [__DIR__.'/python-face/venv/Scripts/python.exe', __DIR__.'/python-face/.venv/Scripts/python.exe']
+			: [__DIR__.'/python-face/venv/bin/python', __DIR__.'/python-face/.venv/bin/python'];
+		$python = null;
+
+		foreach ($pythonCandidates as $candidate) {
+			if (is_file($candidate)) {
+				$python = $candidate;
+				break;
+			}
+		}
+
+		$python ??= PHP_OS_FAMILY === 'Windows' ? 'python' : 'python3';
+		$faceLog = __DIR__.'/storage/logs/face-api.log';
+		$nullDevice = PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null';
+
+		$faceProcess = @proc_open(
+			[$python, '-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', (string) $facePort],
+			[
+				0 => ['file', $nullDevice, 'r'],
+				1 => ['file', $faceLog, 'a'],
+				2 => ['file', $faceLog, 'a'],
+			],
+			$pipes,
+			__DIR__.'/python-face'
+		);
+
+		if (is_resource($faceProcess)) {
+			fwrite(STDOUT, "Starting Python face API on 127.0.0.1:{$facePort} (log: storage/logs/face-api.log).\n");
+
+			register_shutdown_function(static function () use (&$faceProcess): void {
+				if (!is_resource($faceProcess)) {
+					return;
+				}
+
+				$status = proc_get_status($faceProcess);
+				if ($status['running']) {
+					proc_terminate($faceProcess);
+				}
+
+				proc_close($faceProcess);
+			});
+		} else {
+			fwrite(STDERR, "Could not start the Python face API. Check that Python and python-face dependencies are installed.\n");
+		}
+	}
+}
+
+$status = $app->handleCommand($input);
+
+exit($status);
