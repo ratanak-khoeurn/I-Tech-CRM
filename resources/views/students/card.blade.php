@@ -105,12 +105,14 @@
             text-transform: uppercase;
         }
         @media print {
-            @page { size: 54mm 85.6mm; margin: 0; }
-            html, body { width: 54mm; height: 85.6mm; min-height: 0; padding: 0; background: #fff; }
+            /* Everything prints on A4 now: the card keeps its real 54 × 85.6 mm size, centred on the
+               sheet with a dashed outline showing where to cut. */
+            @page { size: A4 portrait; margin: 12mm; }
+            html, body { width: auto; min-height: 0; padding: 0; background: #fff; }
             body { display: block; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
             .card-preview { display: block; }
             .print-button { display: none; }
-            .student-card { width: 54mm; height: 85.6mm; border-radius: 0; box-shadow: none; }
+            .student-card { width: 54mm; height: 85.6mm; margin: 0 auto; outline: .3mm dashed #98a6b5; outline-offset: 2.5mm; border-radius: 0; box-shadow: none; }
             .id-header { padding: 3.5mm 3mm 1mm; }
             .org-logo { width: 32mm; max-height: 9mm; }
             .portrait-wrap { margin-top: .7mm; margin-bottom: 2mm; }

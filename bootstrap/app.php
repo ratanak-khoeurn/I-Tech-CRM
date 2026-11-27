@@ -15,6 +15,11 @@ return Application::configure(basePath: dirname(__DIR__))
             'role' => \App\Http\Middleware\EnsureRole::class,
         ]);
 
+        // cloudflared terminates TLS and opens the origin connection from this machine,
+        // so X-Forwarded-Proto only ever arrives from loopback. Without this the app
+        // builds http:// URLs behind the tunnel and the secure session cookie is dropped.
+        $middleware->trustProxies(at: '127.0.0.1');
+
         // Live fingerprint terminals / LAN bridges POST punches here. They cannot
         // carry a CSRF token, so the route is authenticated by device token instead.
         $middleware->validateCsrfTokens(except: [

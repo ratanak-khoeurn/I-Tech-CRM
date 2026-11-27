@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\AuditLog;
 use App\Models\FeeStructure;
 use App\Models\Invoice;
+use App\Models\InvoiceItem;
 use App\Models\Payment;
 use App\Models\Student;
 use Illuminate\Http\Request;
@@ -65,8 +66,7 @@ class InvoiceController extends Controller
     {
         $data = $request->validate($this->rules());
         $items = $this->validateItems($request);
-        $data['discount'] = $this->resolveDiscount($data, $items);
-        unset($data['discount_type'], $data['discount_value']);
+        $data['discount'] = round(array_sum(array_column($items, 'discount')), 2);
 
         $invoice = DB::transaction(function () use ($request, $data, $items) {
             $invoice = new Invoice($data);
@@ -108,8 +108,7 @@ class InvoiceController extends Controller
         abort_if(in_array($invoice->status, ['paid', 'cancelled'], true), 403, 'Paid or cancelled invoices cannot be edited.');
         $data = $request->validate($this->rules());
         $items = $this->validateItems($request);
-        $data['discount'] = $this->resolveDiscount($data, $items);
-        unset($data['discount_type'], $data['discount_value']);
+        $data['discount'] = round(array_sum(array_column($items, 'discount')), 2);
 
         DB::transaction(function () use ($invoice, $data, $items) {
             $invoice->update($data);
@@ -163,19 +162,42 @@ class InvoiceController extends Controller
         $data = $request->validate([
             'payment_date' => ['required', 'date'],
             'amount' => ['required', 'numeric', 'min:0.01', 'max:99999999'],
-            'method' => ['required', Rule::in(array_keys(Payment::METHODS))],
             'reference' => ['nullable', 'string', 'max:100'],
             'notes' => ['nullable', 'string', 'max:2000'],
         ]);
         if ((float) $data['amount'] > $invoice->balance() + 0.009) {
             return back()->with('error', 'Payment exceeds the outstanding balance of ' . number_format($invoice->balance(), 2) . '.');
         }
-        $data['received_by'] = Auth::id();
-        $invoice->payments()->create($data);
-        $invoice->syncStatus();
-        AuditLog::record('created', 'payment', $invoice->id, "Payment of {$data['amount']} on {$invoice->invoice_number}");
+        // The money is collected through the channels the fee lines were billed in, so the
+        // cashier states the amount only and it is spent over those lines in order.
+        $chunks = $invoice->splitByMethods((float) $data['amount']);
+        if (! $chunks) {
+            return back()->with('error', 'Add at least one line item before recording a payment.');
+        }
 
-        return back()->with('success', 'Payment recorded.');
+        DB::transaction(function () use ($invoice, $data, $chunks) {
+            foreach ($chunks as $chunk) {
+                $invoice->payments()->create([
+                    'payment_date' => $data['payment_date'],
+                    'amount' => $chunk['amount'],
+                    'method' => $chunk['method'],
+                    'reference' => $data['reference'] ?? null,
+                    'notes' => $data['notes'] ?? null,
+                    'received_by' => Auth::id(),
+                ]);
+            }
+            $invoice->syncStatus();
+        });
+
+        $split = implode(' + ', array_map(
+            fn (array $chunk) => '$' . number_format($chunk['amount'], 2) . ' ' . (Payment::METHODS[$chunk['method']] ?? $chunk['method']),
+            $chunks,
+        ));
+        AuditLog::record('created', 'payment', $invoice->id, "Payment of {$split} on {$invoice->invoice_number}");
+
+        return back()->with('success', count($chunks) > 1
+            ? 'Payment recorded and split by fee line: ' . $split . '.'
+            : 'Payment recorded.');
     }
 
     public function destroyPayment(Payment $payment)
@@ -231,32 +253,15 @@ class InvoiceController extends Controller
             'issue_date' => ['required', 'date'],
             'due_date' => ['nullable', 'date', 'after_or_equal:issue_date'],
             'status' => ['required', Rule::in(['draft', 'sent'])],
-            'discount_type' => ['required', Rule::in(['amount', 'percent'])],
-            'discount_value' => ['nullable', 'numeric', 'min:0', 'max:' . (request()->input('discount_type') === 'percent' ? '100' : '99999999')],
             'notes' => ['nullable', 'string', 'max:2000'],
         ];
     }
 
-    private function resolveDiscount(array $data, array $items): float
-    {
-        $subtotal = array_sum(array_map(
-            fn (array $item) => (int) $item['quantity'] * (float) $item['unit_price'],
-            $items
-        ));
-        $value = (float) ($data['discount_value'] ?? 0);
-        $discount = ($data['discount_type'] ?? 'amount') === 'percent'
-            ? round($subtotal * $value / 100, 2)
-            : round($value, 2);
-
-        if ($discount > $subtotal) {
-            throw ValidationException::withMessages([
-                'discount_value' => 'The discount cannot exceed the invoice subtotal.',
-            ]);
-        }
-
-        return $discount;
-    }
-
+    /**
+     * Normalize the submitted lines, turning each per-line discount into dollars.
+     *
+     * @return list<array<string, mixed>>
+     */
     private function validateItems(Request $request): array
     {
         $validated = $request->validate([
@@ -264,20 +269,44 @@ class InvoiceController extends Controller
             'items.*.description' => ['required', 'string', 'max:255'],
             'items.*.quantity' => ['required', 'integer', 'min:1', 'max:10000'],
             'items.*.unit_price' => ['required', 'numeric', 'min:0', 'max:99999999'],
+            'items.*.payment_method' => ['required', Rule::in(array_keys(Payment::METHODS))],
+            'items.*.discount' => ['nullable', 'numeric', 'min:0', 'max:99999999'],
+            'items.*.discount_type' => ['required', Rule::in(array_keys(InvoiceItem::DISCOUNT_UNITS))],
         ]);
 
-        return $validated['items'];
+        $items = [];
+
+        foreach ($validated['items'] as $key => $item) {
+            $amount = round((int) $item['quantity'] * (float) $item['unit_price'], 2);
+            $value = (float) ($item['discount'] ?? 0);
+            $discount = $item['discount_type'] === 'percent'
+                ? round($amount * min($value, 100) / 100, 2)
+                : round($value, 2);
+
+            if ($discount > $amount) {
+                throw ValidationException::withMessages([
+                    "items.$key.discount" => "The discount on \"{$item['description']}\" cannot exceed its amount of " . number_format($amount, 2) . '.',
+                ]);
+            }
+
+            $items[] = [
+                'description' => $item['description'],
+                'quantity' => $item['quantity'],
+                'unit_price' => $item['unit_price'],
+                'payment_method' => $item['payment_method'],
+                'discount' => $discount,
+                'discount_type' => $item['discount_type'],
+                'amount' => $amount,
+            ];
+        }
+
+        return $items;
     }
 
     private function saveItems(Invoice $invoice, array $items): void
     {
         foreach ($items as $item) {
-            $invoice->items()->create([
-                'description' => $item['description'],
-                'quantity' => $item['quantity'],
-                'unit_price' => $item['unit_price'],
-                'amount' => round((int) $item['quantity'] * (float) $item['unit_price'], 2),
-            ]);
+            $invoice->items()->create($item);
         }
     }
 

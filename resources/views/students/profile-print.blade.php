@@ -11,6 +11,7 @@
         table.info td { padding: 3px 6px; border-bottom: 1px solid #eee; vertical-align: top; }
         table.info td.lbl { width: 28%; color: #555; font-weight: 600; }
         .no-print { position: sticky; top: 0; z-index: 10; }
+        @page { size: A4 portrait; margin: 12mm; }
         @media print { .no-print { display: none !important; } body { font-size: 11px; } }
     </style>
 </head>

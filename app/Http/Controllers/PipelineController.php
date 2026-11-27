@@ -114,6 +114,7 @@ class PipelineController extends Controller
             ->where('record_status', 'active')
             ->selectRaw('pipeline_stage, COUNT(*) as total')
             ->groupBy('pipeline_stage')
-            ->pluck('total', 'pipeline_stage');
+            ->pluck('total', 'pipeline_stage')
+            ->all();
     }
 }

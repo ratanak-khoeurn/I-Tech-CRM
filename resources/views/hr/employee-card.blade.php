@@ -137,13 +137,15 @@
         }
 
         @media print {
-            @page { size: 54mm 85.6mm; margin: 0; }
-            html, body { width: 54mm; height: 85.6mm; margin: 0; padding: 0; background: #fff; }
+            /* Everything prints on A4 now: the card keeps its real 54 × 85.6 mm size, centred on the
+               sheet with a dashed outline showing where to cut. */
+            @page { size: A4 portrait; margin: 12mm; }
+            html, body { width: auto; min-height: 0; margin: 0; padding: 0; background: #fff; }
             body { display: block; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-            .container { width: 54mm; max-width: none; margin: 0; padding: 0 !important; }
+            .container { width: auto; max-width: none; margin: 0; padding: 0 !important; }
             .container > .d-flex.justify-content-center { display: block !important; }
             .no-print { display: none !important; }
-            .id-card { width: 54mm; height: 85.6mm; border-radius: 0; box-shadow: none; }
+            .id-card { width: 54mm; height: 85.6mm; margin: 0 auto; outline: .3mm dashed #98a6b5; outline-offset: 2.5mm; border-radius: 0; box-shadow: none; }
             .id-header { padding: 4mm 3mm 1.5mm; }
             .org-logo { width: 35mm; max-height: 10mm; }
             .portrait-wrap { margin-top: 1mm; margin-bottom: 2.5mm; }

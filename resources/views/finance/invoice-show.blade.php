@@ -49,9 +49,12 @@
 
 <?php
     $invoiceSubtotal = (float) $invoice->items->sum('amount');
-    $invoiceDiscount = (float) $invoice->discount;
-    $discountRate = $invoiceSubtotal > 0 ? min(100, $invoiceDiscount / $invoiceSubtotal * 100) : 0;
+    $invoiceDiscount = (float) $invoice->items->sum('discount');
     $lastPayment = $invoice->payments->sortByDesc('payment_date')->first();
+    // Whoever prints the document is the cashier standing at the counter, so the signature line
+    // follows the login session; payments keep their own received_by in the history table.
+    $cashierName = optional(auth()->user())->name ?: ($lastPayment?->receiver?->name ?? '');
+    $breakdown = $invoice->methodBreakdown();
     $centerName = \App\Models\Setting::get('center_name', 'I-Tech Media Center');
     $centerAddress = \App\Models\Setting::get('center_address', '');
     $centerPhone = \App\Models\Setting::get('center_phone', '');
@@ -105,18 +108,18 @@
 
         <table class="invoice-print-table">
             <thead>
-                <tr><th class="number">No</th><th>Item Description</th><th class="money">Amount</th><th class="discount">Discount</th><th class="money">Net Amount</th></tr>
+                <tr><th class="number">No</th><th>Item Description</th><th class="method">Payment Method</th><th class="money">Amount</th><th class="discount">Discount</th><th class="money">Net Amount</th></tr>
             </thead>
             <tbody>
                 @foreach($invoice->items as $index => $item)
                     @php($itemAmount = (float) $item->amount)
-                    @php($itemDiscount = $invoiceSubtotal > 0 ? $invoiceDiscount * ($itemAmount / $invoiceSubtotal) : 0)
                     <tr>
                         <td class="number">{{ $index + 1 }}</td>
                         <td>{{ $item->description }}</td>
+                        <td class="method">{{ $item->methodLabel() }}</td>
                         <td class="money">${{ number_format($itemAmount, 2) }}</td>
-                        <td class="money">{{ $discountRate > 0 ? number_format($discountRate, 0) . '%' : '—' }}</td>
-                        <td class="money">${{ number_format(max(0, $itemAmount - $itemDiscount), 2) }}</td>
+                        <td class="money">{{ (float) $item->discount > 0 ? '-' . $item->discountLabel() : '—' }}</td>
+                        <td class="money">${{ number_format($item->net(), 2) }}</td>
                     </tr>
                 @endforeach
             </tbody>
@@ -133,7 +136,12 @@
             </tbody>
         </table>
 
-        <div class="payment-method"><strong>Payment By:</strong> {{ $lastPayment ? (\App\Models\Payment::METHODS[$lastPayment->method] ?? ucfirst($lastPayment->method)) : '—' }}</div>
+        {{-- The invoice states how each line should be collected; the receipt states what was collected. --}}
+        <div class="payment-method">
+            <strong>Payment By:</strong>
+            @php($amounts = collect($breakdown)->map(fn (array $row) => $row['label'] . ' ($' . number_format($kind === 'receipt' ? $row['paid'] : $row['due'], 2) . ')')->implode(' · '))
+            {{ $amounts !== '' ? $amounts : '—' }}
+        </div>
         <div class="invoice-lower">
             <div class="amount-words"><strong>In Words:</strong><br>{{ $amountWords($invoice->total()) }}</div>
         </div>
@@ -141,7 +149,7 @@
         <div class="invoice-note"><strong>Note</strong><br>{{ $invoice->notes ?: '* All payments are not refundable or transferable' }}</div>
         <footer class="signature-area">
             <div><span>Payer’s Signature & Name</span><div class="signature-line">{{ $invoice->student->name_english ?? '' }}</div></div>
-            <div><span>Cashier’s Signature</span><div class="signature-line">{{ $lastPayment?->receiver?->name ?? auth()->user()->name }}</div></div>
+            <div><span>Cashier’s Signature</span><div class="signature-line">{{ $cashierName }}</div></div>
         </footer>
     </div>
 </section>
@@ -179,7 +187,7 @@
     <div class="table-responsive">
         <table class="table align-middle mb-0">
             <thead class="table-light">
-                <tr><th>Description</th><th class="text-center">Qty</th><th class="text-end">Unit price</th><th class="text-end">Amount</th></tr>
+                <tr><th>Description</th><th class="text-center">Qty</th><th class="text-end">Unit price</th><th class="text-end">Discount</th><th>Pay by</th><th class="text-end">Amount</th></tr>
             </thead>
             <tbody>
                 @forelse($invoice->items as $item)
@@ -187,12 +195,38 @@
                         <td>{{ $item->description }}</td>
                         <td class="text-center">{{ $item->quantity }}</td>
                         <td class="text-end">${{ number_format((float) $item->unit_price, 2) }}</td>
-                        <td class="text-end">${{ number_format((float) $item->amount, 2) }}</td>
+                        <td class="text-end {{ (float) $item->discount > 0 ? 'text-success' : 'text-muted' }}">
+                            {{ (float) $item->discount > 0 ? '-' . $item->discountLabel() : '—' }}
+                        </td>
+                        <td><span class="badge text-bg-light border">{{ $item->methodLabel() }}</span></td>
+                        <td class="text-end">${{ number_format($item->net(), 2) }}</td>
                     </tr>
                 @empty
-                    <tr><td colspan="4" class="text-muted text-center py-3">No line items.</td></tr>
+                    <tr><td colspan="6" class="text-muted text-center py-3">No line items.</td></tr>
                 @endforelse
             </tbody>
+            @if(count($breakdown) > 1)
+                <tfoot class="border-top">
+                    <tr>
+                        <td colspan="6" class="pt-2">
+                            <div class="d-flex flex-wrap gap-3 small">
+                                @foreach($breakdown as $row)
+                                    <div>
+                                        <span class="text-muted">{{ $row['label'] }}:</span>
+                                        <span class="fw-semibold">${{ number_format($row['due'], 2) }}</span>
+                                        @if($row['paid'] > 0)
+                                            <span class="text-success">paid ${{ number_format($row['paid'], 2) }}</span>
+                                        @endif
+                                        @if($row['balance'] > 0.009)
+                                            <span class="text-danger">due ${{ number_format($row['balance'], 2) }}</span>
+                                        @endif
+                                    </div>
+                                @endforeach
+                            </div>
+                        </td>
+                    </tr>
+                </tfoot>
+            @endif
         </table>
     </div>
     @if($invoice->notes)
@@ -255,13 +289,10 @@
                         <label class="form-label">Amount ($) <span class="text-danger">*</span></label>
                         <input type="number" step="0.01" min="0.01" max="{{ $invoice->balance() }}" name="amount" class="form-control" value="{{ old('amount', $invoice->balance()) }}" required>
                     </div>
-                    <div class="col-6">
-                        <label class="form-label">Method <span class="text-danger">*</span></label>
-                        <select name="method" class="form-select" required>
-                            @foreach(\App\Models\Payment::METHODS as $k => $label)
-                                <option value="{{ $k }}" @selected(old('method', 'cash') === $k)>{{ $label }}</option>
-                            @endforeach
-                        </select>
+                    <div class="col-12">
+                        <label class="form-label">Collected by</label>
+                        <div class="small fw-semibold" id="splitPreview">—</div>
+                        <div class="form-text">Follows the fee lines this payment settles, so no method to choose here.</div>
                     </div>
                     <div class="col-6">
                         <label class="form-label">Reference</label>
@@ -290,6 +321,32 @@
     </script>
     @endpush
 @endif
+
+@push('scripts')
+<script>
+(function () {
+    var owed = @json(collect($breakdown)->map(fn (array $row) => ['label' => $row['label'], 'balance' => max(0, $row['balance'])])->values()->all());
+    var amountInput = document.querySelector('#paymentModal input[name="amount"]');
+    var preview = document.getElementById('splitPreview');
+    if (!amountInput || !preview) { return; }
+
+    function render() {
+        var left = parseFloat(amountInput.value) || 0;
+        var parts = [];
+        owed.forEach(function (channel) {
+            if (left <= 0 || channel.balance <= 0) { return; }
+            var take = Math.min(left, channel.balance);
+            left = Math.round((left - take) * 100) / 100;
+            parts.push(channel.label + ': $' + take.toFixed(2));
+        });
+        preview.textContent = parts.length ? parts.join('  ·  ') : '—';
+    }
+
+    amountInput.addEventListener('input', render);
+    render();
+})();
+</script>
+@endpush
 @endif
 @push('styles')
 <style>
@@ -319,6 +376,8 @@
         .invoice-print-table .number { width: 8mm; text-align: center; }
         .invoice-print-table .money { width: 27mm; text-align: right; white-space: nowrap; }
         .invoice-print-table .discount { width: 25mm; text-align: center; }
+        .invoice-print-table .method { width: 25mm; text-align: center; white-space: nowrap; }
+        .invoice-print-table th.discount { width: 20mm; }
         .invoice-totals { width: 65mm; margin: 0 0 0 auto; border-collapse: collapse; font-size: 8pt; }
         .invoice-totals td { border: 0 !important; padding: 1mm 1.5mm; }
         .invoice-totals td.total-value { border: .3mm solid #222 !important; }

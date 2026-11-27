@@ -163,3 +163,7 @@ body {
 .empty-state i { font-size: 3rem; opacity: .5; display: block; margin-bottom: .6rem; }
 .completion-bar { height: 8px; border-radius: 4px; }
 .badge-soft { font-weight: 600; }
+
+/* Every document prints on A4 by default; views that need their own sheet metrics
+   (invoice/certificate border-to-border, ID card cut guides) push their own @page rule after this stylesheet. */
+@page { size: A4 portrait; margin: 12mm; }

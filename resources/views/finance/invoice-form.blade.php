@@ -3,9 +3,10 @@
 @section('title', $invoice->exists ? 'Edit Invoice' : 'New Invoice')
 
 @section('content')
+@php($methodOptions = \App\Models\Payment::METHODS)
 <div class="mb-3">
     <h1 class="page-title"><i class="bi bi-receipt text-primary me-1"></i>{{ $invoice->exists ? 'Edit Invoice ' . $invoice->invoice_number : 'New Invoice' }}</h1>
-    <div class="page-subtitle">Line items determine the invoice total; payments are recorded from the invoice page.</div>
+    <div class="page-subtitle">Choose how each fee line is collected; the invoice shows the method per line.</div>
 </div>
 
 <form method="POST" action="{{ $invoice->exists ? route('invoices.update', $invoice) : route('invoices.store') }}" data-loading>
@@ -76,19 +77,6 @@
                         <option value="sent" @selected(old('status', $invoice->status) === 'sent')>Sent</option>
                     </select>
                 </div>
-                <div class="col-md-4">
-                    <label class="form-label">Discount</label>
-                    <div class="input-group">
-                        <select name="discount_type" id="discountType" class="form-select" style="max-width: 105px" aria-label="Discount type">
-                            <option value="amount" @selected(old('discount_type', 'amount') === 'amount')>$</option>
-                            <option value="percent" @selected(old('discount_type') === 'percent')>%</option>
-                        </select>
-                        <input type="number" step="0.01" min="0" id="discountValue" name="discount_value" class="form-control @error('discount_value') is-invalid @enderror"
-                               value="{{ old('discount_value', $invoice->discount ?? 0) }}" aria-label="Discount value">
-                    </div>
-                    @error('discount_value')<div class="text-danger small mt-1">{{ $message }}</div>@enderror
-                    <div class="form-text" id="discountPreview">Discount amount: $0.00</div>
-                </div>
                 <div class="col-md-6">
                     <label class="form-label">Notes</label>
                     <input type="text" name="notes" class="form-control" value="{{ old('notes', $invoice->notes) }}" placeholder="Visible on the invoice">
@@ -100,7 +88,8 @@
     <div class="card mb-3">
         <div class="card-header bg-white d-flex justify-content-between align-items-center flex-wrap gap-2">
             <span class="fw-semibold">Line Items</span>
-            <div class="d-flex gap-2 align-items-center">
+            <div class="text-muted small"><i class="bi bi-info-circle me-1"></i>Each line carries its own payment method and discount ($ or %).</div>
+            <div class="d-flex gap-2 align-items-center flex-wrap">
                 <select id="feePick" class="form-select form-select-sm" style="max-width: 260px;">
                     <option value="">Add from fee setup…</option>
                     @foreach($fees as $fee)
@@ -118,20 +107,39 @@
                 <table class="table align-middle mb-0" id="itemsTable">
                     <thead class="table-light">
                         <tr>
-                            <th style="width: 46%">Description</th>
-                            <th style="width: 12%">Qty</th>
-                            <th style="width: 18%">Unit price ($)</th>
+                            <th style="width: 27%">Description</th>
+                            <th style="width: 7%">Qty</th>
+                            <th style="width: 13%">Unit price</th>
+                            <th style="width: 17%">Discount</th>
+                            <th style="width: 15%">Pay by</th>
                             <th style="width: 16%" class="text-end">Amount</th>
-                            <th style="width: 8%"></th>
+                            <th style="width: 5%"></th>
                         </tr>
                     </thead>
                     <tbody>
-                        @php($rows = old('items', $invoice->exists ? $invoice->items->map(fn ($i) => ['description' => $i->description, 'quantity' => $i->quantity, 'unit_price' => $i->unit_price])->all() : []))
+                        @php($rows = old('items', $invoice->exists ? $invoice->items->map(fn ($i) => ['description' => $i->description, 'quantity' => $i->quantity, 'unit_price' => $i->unit_price, 'payment_method' => $i->payment_method ?: 'cash', 'discount' => $i->discountInOwnUnit(), 'discount_type' => $i->discount_type ?: 'amount'])->all() : []))
                         @forelse($rows as $i => $row)
                             <tr class="item-row">
                                 <td><input type="text" name="items[{{ $i }}][description]" class="form-control" value="{{ $row['description'] ?? '' }}" required></td>
                                 <td><input type="number" name="items[{{ $i }}][quantity]" class="form-control qty" min="1" value="{{ $row['quantity'] ?? 1 }}" required></td>
                                 <td><input type="number" step="0.01" min="0" name="items[{{ $i }}][unit_price]" class="form-control price" value="{{ $row['unit_price'] ?? '' }}" required></td>
+                                <td>
+                                    <div class="input-group input-group-sm">
+                                        <input type="number" step="0.01" min="0" name="items[{{ $i }}][discount]" class="form-control disc" value="{{ number_format((float) ($row['discount'] ?? 0), 2, '.', '') }}" required>
+                                        <select name="items[{{ $i }}][discount_type]" class="form-select form-select-sm disc-type" aria-label="Discount unit">
+                                            @foreach(\App\Models\InvoiceItem::DISCOUNT_UNITS as $unit => $sign)
+                                                <option value="{{ $unit }}" @selected(($row['discount_type'] ?? 'amount') === $unit)>{{ $sign }}</option>
+                                            @endforeach
+                                        </select>
+                                    </div>
+                                </td>
+                                <td>
+                                    <select name="items[{{ $i }}][payment_method]" class="form-select form-select-sm method">
+                                        @foreach($methodOptions as $key => $label)
+                                            <option value="{{ $key }}" @selected(($row['payment_method'] ?? 'cash') === $key)>{{ $label }}</option>
+                                        @endforeach
+                                    </select>
+                                </td>
                                 <td class="text-end row-amount fw-semibold">$0.00</td>
                                 <td class="text-end"><button type="button" class="btn btn-sm btn-outline-danger remove-row"><i class="bi bi-trash"></i></button></td>
                             </tr>
@@ -139,15 +147,18 @@
                         @endforelse
                     </tbody>
                     <tfoot>
-                        <tr><td colspan="3" class="text-end fw-semibold">Subtotal</td><td class="text-end fw-semibold" id="subtotal">$0.00</td><td></td></tr>
-                        <tr><td colspan="3" class="text-end">Discount</td><td class="text-end" id="discountAmount">-$0.00</td><td></td></tr>
-                        <tr><td colspan="3" class="text-end fw-semibold">Invoice total</td><td class="text-end fw-semibold" id="invoiceTotal">$0.00</td><td></td></tr>
+                        <tr><td colspan="5" class="text-end fw-semibold">Subtotal</td><td class="text-end fw-semibold" id="subtotal">$0.00</td><td></td></tr>
+                        <tr><td colspan="5" class="text-end">Discount</td><td class="text-end" id="discountAmount">-$0.00</td><td></td></tr>
+                        <tr><td colspan="5" class="text-end fw-semibold">Invoice total</td><td class="text-end fw-semibold" id="invoiceTotal">$0.00</td><td></td></tr>
+                        <tr><td colspan="5" class="text-end small text-muted">Split of the total by collection method</td><td colspan="2" class="text-end small fw-semibold" id="methodPreview">—</td></tr>
                     </tfoot>
                 </table>
             </div>
             @error('items')<div class="text-danger small mt-2">{{ $message }}</div>@enderror
             @error('items.*.description')<div class="text-danger small mt-1">{{ $message }}</div>@enderror
             @error('items.*.unit_price')<div class="text-danger small mt-1">{{ $message }}</div>@enderror
+            @error('items.*.payment_method')<div class="text-danger small mt-1">{{ $message }}</div>@enderror
+            @error('items.*.discount')<div class="text-danger small mt-1">{{ $message }}</div>@enderror
         </div>
     </div>
 
@@ -170,13 +181,21 @@
                     <input type="text" class="form-control" id="otherFeeDescription" maxlength="255" placeholder="e.g. Replacement ID card" required>
                 </div>
                 <div class="row g-3">
-                    <div class="col-6">
+                    <div class="col-4">
                         <label class="form-label" for="otherFeeQuantity">Quantity</label>
                         <input type="number" class="form-control" id="otherFeeQuantity" min="1" max="10000" value="1" required>
                     </div>
-                    <div class="col-6">
+                    <div class="col-4">
                         <label class="form-label" for="otherFeeAmount">Unit price ($) <span class="text-danger">*</span></label>
                         <input type="number" class="form-control" id="otherFeeAmount" step="0.01" min="0" max="99999999" placeholder="0.00" required>
+                    </div>
+                    <div class="col-4">
+                        <label class="form-label" for="otherFeeMethod">Pay by</label>
+                        <select class="form-select" id="otherFeeMethod">
+                            @foreach($methodOptions as $key => $label)
+                                <option value="{{ $key }}" @selected($key === 'cash')>{{ $label }}</option>
+                            @endforeach
+                        </select>
                     </div>
                 </div>
             </div>
@@ -220,33 +239,72 @@
 
     var tbody = document.querySelector('#itemsTable tbody');
     var index = tbody.querySelectorAll('tr.item-row').length;
+    var methods = @json($methodOptions);
+    var methodOptionsHtml = Object.keys(methods).map(function (key) {
+        return '<option value="' + key + '">' + methods[key] + '</option>';
+    }).join('');
+    var units = @json(\App\Models\InvoiceItem::DISCOUNT_UNITS);
+    var unitOptionsHtml = Object.keys(units).map(function (key) {
+        return '<option value="' + key + '">' + units[key] + '</option>';
+    }).join('');
 
-    function recalc() {
-        var subtotal = 0;
-        tbody.querySelectorAll('tr.item-row').forEach(function (tr) {
-            var qty = parseFloat(tr.querySelector('.qty').value) || 0;
-            var price = parseFloat(tr.querySelector('.price').value) || 0;
-            var amount = qty * price;
-            subtotal += amount;
-            tr.querySelector('.row-amount').textContent = '$' + amount.toFixed(2);
-        });
-        document.getElementById('subtotal').textContent = '$' + subtotal.toFixed(2);
-        var discountType = document.getElementById('discountType').value;
-        var discountValue = parseFloat(document.getElementById('discountValue').value) || 0;
-        var discount = discountType === 'percent' ? subtotal * Math.min(discountValue, 100) / 100 : discountValue;
-        discount = Math.min(subtotal, discount);
-        document.getElementById('discountAmount').textContent = '-$' + discount.toFixed(2);
-        document.getElementById('invoiceTotal').textContent = '$' + Math.max(0, subtotal - discount).toFixed(2);
-        document.getElementById('discountPreview').textContent = 'Discount amount: $' + discount.toFixed(2);
+    function lineAmount(tr) {
+        return (parseFloat(tr.querySelector('.qty').value) || 0) * (parseFloat(tr.querySelector('.price').value) || 0);
     }
 
-    function addRow(description, qty, price) {
+    function recalc() {
+        var gross = 0;
+        var discount = 0;
+        var byMethod = {};
+        tbody.querySelectorAll('tr.item-row').forEach(function (tr) {
+            var amount = lineAmount(tr);
+            var typed = parseFloat(tr.querySelector('.disc').value) || 0;
+            var isPercent = tr.querySelector('.disc-type').value === 'percent';
+            var off = Math.min(amount, isPercent ? amount * Math.min(typed, 100) / 100 : typed);
+            var net = Math.max(0, amount - off);
+            gross += amount;
+            discount += off;
+            tr.querySelector('.row-amount').textContent = '$' + net.toFixed(2);
+            var method = tr.querySelector('.method');
+            if (method) byMethod[method.value] = (byMethod[method.value] || 0) + net;
+        });
+        document.getElementById('subtotal').textContent = '$' + gross.toFixed(2);
+        document.getElementById('discountAmount').textContent = '-$' + discount.toFixed(2);
+        document.getElementById('invoiceTotal').textContent = '$' + Math.max(0, gross - discount).toFixed(2);
+
+        var parts = Object.keys(byMethod).filter(function (key) { return byMethod[key] > 0; }).map(function (key) {
+            return methods[key] + ': $' + byMethod[key].toFixed(2);
+        });
+        document.getElementById('methodPreview').textContent = parts.length ? parts.join(' · ') : '—';
+    }
+
+    // The typed number means dollars or percent of that line, so restate it when this
+    // row's unit changes instead of silently re-interpreting what the cashier entered.
+    function restateDiscount(tr, from, to) {
+        var amount = lineAmount(tr);
+        var input = tr.querySelector('.disc');
+        var typed = parseFloat(input.value) || 0;
+        if (amount <= 0) { return; }
+        var dollars = from === 'percent' ? amount * Math.min(typed, 100) / 100 : typed;
+        input.value = to === 'percent' ? +(dollars / amount * 100).toFixed(2) : dollars.toFixed(2);
+    }
+
+    function discountCellHtml() {
+        return '<div class="input-group input-group-sm">' +
+            '<input type="number" step="0.01" min="0" name="items[' + index + '][discount]" class="form-control disc" value="0" required>' +
+            '<select name="items[' + index + '][discount_type]" class="form-select form-select-sm disc-type" aria-label="Discount unit">' + unitOptionsHtml + '</select>' +
+            '</div>';
+    }
+
+    function addRow(description, qty, price, method) {
         var tr = document.createElement('tr');
         tr.className = 'item-row';
         tr.innerHTML =
             '<td><input type="text" name="items[' + index + '][description]" class="form-control" required></td>' +
             '<td><input type="number" name="items[' + index + '][quantity]" class="form-control qty" min="1" value="1" required></td>' +
             '<td><input type="number" step="0.01" min="0" name="items[' + index + '][unit_price]" class="form-control price" required></td>' +
+            '<td>' + discountCellHtml() + '</td>' +
+            '<td><select name="items[' + index + '][payment_method]" class="form-select form-select-sm method">' + methodOptionsHtml + '</select></td>' +
             '<td class="text-end row-amount fw-semibold">$0.00</td>' +
             '<td class="text-end"><button type="button" class="btn btn-sm btn-outline-danger remove-row"><i class="bi bi-trash"></i></button></td>';
         index++;
@@ -254,6 +312,9 @@
         if (description) tr.querySelector('input[name$="[description]"]').value = description;
         if (qty) tr.querySelector('.qty').value = qty;
         if (price) tr.querySelector('.price').value = price;
+        tr.querySelector('.method').value = method || 'cash';
+        var unit = tr.querySelector('.disc-type');
+        unit.dataset.unit = unit.value;
         recalc();
     }
 
@@ -267,6 +328,7 @@
             document.getElementById('otherFeeDescription').value.trim(),
             document.getElementById('otherFeeQuantity').value,
             document.getElementById('otherFeeAmount').value,
+            document.getElementById('otherFeeMethod').value,
         );
         otherFeeForm.reset();
         document.getElementById('otherFeeQuantity').value = '1';
@@ -287,8 +349,16 @@
         if (btn) { btn.closest('tr').remove(); recalc(); }
     });
     tbody.addEventListener('input', recalc);
-    document.getElementById('discountType').addEventListener('change', recalc);
-    document.getElementById('discountValue').addEventListener('input', recalc);
+    tbody.addEventListener('change', recalc);
+    tbody.addEventListener('change', function (e) {
+        var sel = e.target.closest('.disc-type');
+        if (!sel) { return; }
+        var from = sel.dataset.unit || 'amount';
+        if (from !== sel.value) { restateDiscount(sel.closest('tr'), from, sel.value); }
+        sel.dataset.unit = sel.value;
+        recalc();
+    });
+    tbody.querySelectorAll('.disc-type').forEach(function (sel) { sel.dataset.unit = sel.value; });
 
     if (tbody.querySelectorAll('tr.item-row').length === 0) { addRow('', 1, ''); }
     recalc();

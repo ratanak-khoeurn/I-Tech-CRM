@@ -96,6 +96,75 @@ class Invoice extends Model
         $this->save();
     }
 
+    /**
+     * What this invoice expects through each collection channel.
+     *
+     * Lines are already net of their own discount, so the per-method figures add up to the
+     * invoice total. Key order follows the line items, which is the order a payment is spent in.
+     *
+     * @return array<string, array{label: string, due: float, paid: float, balance: float}>
+     */
+    public function methodBreakdown(): array
+    {
+        $rows = [];
+
+        foreach ($this->items as $item) {
+            $method = $item->payment_method ?: 'cash';
+            $rows[$method]['due'] = ($rows[$method]['due'] ?? 0) + $item->net();
+        }
+
+        foreach ($this->payments as $payment) {
+            $method = $payment->method ?: 'cash';
+            $rows[$method]['paid'] = ($rows[$method]['paid'] ?? 0) + (float) $payment->amount;
+        }
+
+        foreach ($rows as $method => $row) {
+            $rows[$method] = [
+                'label' => Payment::METHODS[$method] ?? ucfirst($method),
+                'due' => round($row['due'] ?? 0, 2),
+                'paid' => round($row['paid'] ?? 0, 2),
+                'balance' => round(($row['due'] ?? 0) - ($row['paid'] ?? 0), 2),
+            ];
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Spend a cash amount over the invoice's collection channels, in line order.
+     *
+     * The cashier no longer picks a method per payment: it follows the fee lines the money
+     * settles, so one payment can split into several records with the same reference.
+     *
+     * @return list<array{method: string, amount: float}>
+     */
+    public function splitByMethods(float $amount): array
+    {
+        $remaining = round(max(0, $amount), 2);
+        $chunks = [];
+
+        foreach ($this->methodBreakdown() as $method => $row) {
+            if ($remaining <= 0.009) {
+                break;
+            }
+            $owed = max(0, $row['balance']);
+            if ($owed <= 0.009) {
+                continue;
+            }
+            $take = round(min($remaining, $owed), 2);
+            $chunks[] = ['method' => $method, 'amount' => $take];
+            $remaining = round($remaining - $take, 2);
+        }
+
+        if ($remaining > 0.009 && $chunks) {
+            // Rounding tail: the last channel carries it so the chunks still total the payment.
+            $last = array_key_last($chunks);
+            $chunks[$last]['amount'] = round($chunks[$last]['amount'] + $remaining, 2);
+        }
+
+        return $chunks;
+    }
+
     /** Sequential INV-YYYY-NNNN number for the current year. */
     public static function nextNumber(): string
     {
