@@ -57,6 +57,25 @@
             </div>
 
             <div class="card mb-3">
+                <div class="card-header fw-semibold"><i class="bi bi-currency-exchange me-1"></i>Money &amp; Currency</div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label" for="riel_rate">Riel rate (៛ per US dollar)</label>
+                            <input type="number" step="1" min="100" max="20000" id="riel_rate" name="riel_rate"
+                                   class="form-control @error('riel_rate') is-invalid @enderror"
+                                   value="{{ old('riel_rate', $settings['riel_rate']->value ?? \App\Support\Money::DEFAULT_RATE) }}">
+                            @error('riel_rate')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                            <div class="form-text">
+                                Invoices and payments are stored in US dollars. This rate only converts the amounts your cashiers type in
+                                <span class="fw-semibold">៛</span>, so 1&nbsp;<span class="fw-semibold">$</span> = <span id="ratePreview">4,100</span>&nbsp;<span class="fw-semibold">៛</span>.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card mb-3">
                 <div class="card-header fw-semibold"><i class="bi bi-bell me-1"></i>Notification Preferences</div>
                 <div class="card-body">
                     <p class="text-muted small mb-3">In-system notifications only. No Telegram / Email / SMS / WhatsApp messages are sent automatically unless the corresponding service is configured and connected.</p>
@@ -139,3 +158,19 @@
     </div>
 </div>
 @endsection
+
+@push('scripts')
+<script>
+(function () {
+    var input = document.getElementById('riel_rate');
+    var preview = document.getElementById('ratePreview');
+    if (!input || !preview) { return; }
+    function show() {
+        var rate = parseInt(input.value, 10);
+        preview.textContent = rate > 0 ? rate.toLocaleString('en-US') : '—';
+    }
+    input.addEventListener('input', show);
+    show();
+})();
+</script>
+@endpush

@@ -12,8 +12,7 @@
         <div class="page-subtitle">Issued {{ $invoice->issue_date->format('M d, Y') }} · Due {{ $invoice->due_date?->format('M d, Y') ?? '—' }}</div>
     </div>
     <div class="d-flex gap-2 flex-wrap">
-        <button class="btn btn-outline-secondary" onclick="printFinancialDocument('invoice')"><i class="bi bi-printer me-1"></i>Print Invoice</button>
-        <button class="btn btn-outline-secondary" onclick="printFinancialDocument('receipt')"><i class="bi bi-receipt me-1"></i>Print Receipt</button>
+        <button class="btn btn-outline-secondary" onclick="printFinancialDocument('both')"><i class="bi bi-printer me-1"></i>Print Invoice &amp; Receipt</button>
         @if($invoice->status === 'draft')
             <form method="POST" action="{{ route('invoices.status', $invoice) }}">
                 @csrf @method('PATCH')
@@ -51,8 +50,6 @@
     $invoiceSubtotal = (float) $invoice->items->sum('amount');
     $invoiceDiscount = (float) $invoice->items->sum('discount');
     $lastPayment = $invoice->payments->sortByDesc('payment_date')->first();
-    // Whoever prints the document is the cashier standing at the counter, so the signature line
-    // follows the login session; payments keep their own received_by in the history table.
     $cashierName = optional(auth()->user())->name ?: ($lastPayment?->receiver?->name ?? '');
     $breakdown = $invoice->methodBreakdown();
     $centerName = \App\Models\Setting::get('center_name', 'I-Tech Media Center');
@@ -76,8 +73,8 @@
         return ($amount < 0 ? 'Minus ' : '') . ($spell((int) abs($amount)) ?: 'Zero') . ' Dollars' . ($cents ? ' and ' . $spell($cents) . ' Cents' : '') . ' Only';
     };
     $documentKinds = [
-        'invoice' => ['title' => 'INVOICE', 'label' => 'Invoice No:', 'date' => $invoice->issue_date, 'dateLabel' => 'Date:'],
-        'receipt' => ['title' => 'OFFICIAL RECEIPT', 'label' => 'Receipt No:', 'date' => $lastPayment?->payment_date ?? $invoice->issue_date, 'dateLabel' => 'Paid date:'],
+        'invoice' => ['title' => 'INVOICE', 'date' => $invoice->issue_date, 'dateLabel' => 'Date:'],
+        'receipt' => ['title' => 'OFFICIAL RECEIPT', 'date' => $lastPayment?->payment_date ?? $invoice->issue_date, 'dateLabel' => 'Paid date:'],
     ];
 ?>
 
@@ -92,16 +89,16 @@
                 @if($centerPhone)<div>{{ $centerPhone }}</div>@endif
             </div>
             <div class="invoice-meta">
-                <div><strong>{{ $document['label'] }}</strong> {{ $invoice->invoice_number }}</div>
-                <div>{{ $document['dateLabel'] }} {{ $document['date']->format('d-M-Y') }}</div>
-                @if($kind === 'invoice' && $invoice->due_date)<div>Due date: {{ $invoice->due_date->format('d-M-Y') }}</div>@endif
+                {{-- Both sheets carry the same two figures: the centre numbers nothing but the invoice, so the receipt quotes it as "Invoice No" too. --}}
+                <div><strong>Invoice No:</strong> {{ $invoice->invoice_number }}</div>
+                <div><strong>Paid Date:</strong> {{ $document['date']->format('d-M-Y') }}</div>
             </div>
         </header>
 
         <div class="document-title">
             <h1>{{ $document['title'] }}</h1>
             @if($invoice->status === 'cancelled')<div class="void-stamp">VOIDED</div>@endif
-            <div class="title-stars">************************</div>
+            <div class="title-stars">**************************************</div>
         </div>
 
         <div class="student-line"><strong>Student Name:</strong> {{ $invoice->student->name_english ?? '—' }}</div>
@@ -112,14 +109,14 @@
             </thead>
             <tbody>
                 @foreach($invoice->items as $index => $item)
-                    @php($itemAmount = (float) $item->amount)
                     <tr>
                         <td class="number">{{ $index + 1 }}</td>
                         <td>{{ $item->description }}</td>
                         <td class="method">{{ $item->methodLabel() }}</td>
-                        <td class="money">${{ number_format($itemAmount, 2) }}</td>
+                        {{-- The sheet repeats the currency the fee was billed in, so a riel line is not read as dollars. --}}
+                        <td class="money">{{ $item->typedLabel($item->typedAmount()) }}</td>
                         <td class="money">{{ (float) $item->discount > 0 ? '-' . $item->discountLabel() : '—' }}</td>
-                        <td class="money">${{ number_format($item->net(), 2) }}</td>
+                        <td class="money">{{ $item->netLabel() }}</td>
                     </tr>
                 @endforeach
             </tbody>
@@ -129,21 +126,19 @@
             <tbody>
                 <tr><td>Sub Total:</td><td class="sub-total-value">${{ number_format($invoiceSubtotal, 2) }}</td></tr>
                 @if($invoiceDiscount > 0)
-                    <tr><td>Discount:</td><td>-${{ number_format($invoiceDiscount, 2) }}</td></tr>
+                    <tr><td>Discount:</td><td class="total-value">-${{ number_format($invoiceDiscount, 2) }}</td></tr>
                 @endif
                 <tr><td>VAT 10%:</td><td class="total-value"></td></tr>
                 <tr class="grand-total"><td>Grand Total:</td><td class="total-value">${{ number_format($invoice->total(), 2) }}</td></tr>
+                {{-- Cambodian receipts quote the riel value at the rate this invoice was billed at, not today's. --}}
+                <tr><td>At {{ number_format($invoice->rate()) }} ៛/USD:</td><td class="total-value">{{ \App\Support\Money::rielLabel($invoice->total(), $invoice->rate()) }}</td></tr>
             </tbody>
         </table>
 
-        {{-- The invoice states how each line should be collected; the receipt states what was collected. --}}
         <div class="payment-method">
             <strong>Payment By:</strong>
             @php($amounts = collect($breakdown)->map(fn (array $row) => $row['label'] . ' ($' . number_format($kind === 'receipt' ? $row['paid'] : $row['due'], 2) . ')')->implode(' · '))
             {{ $amounts !== '' ? $amounts : '—' }}
-        </div>
-        <div class="invoice-lower">
-            <div class="amount-words"><strong>In Words:</strong><br>{{ $amountWords($invoice->total()) }}</div>
         </div>
 
         <div class="invoice-note"><strong>Note</strong><br>{{ $invoice->notes ?: '* All payments are not refundable or transferable' }}</div>
@@ -178,12 +173,16 @@
                 <div class="col"><div class="text-muted small">Balance</div><div class="fs-5 fw-semibold text-danger">${{ number_format($invoice->balance(), 2) }}</div></div>
                 <div class="col"><div class="text-muted small">Discount</div><div class="fs-5 fw-semibold">${{ number_format((float) $invoice->discount, 2) }}</div></div>
             </div>
+            <div class="text-muted small text-center mt-2">
+                At {{ number_format($invoice->rate()) }} ៛/USD: total {{ \App\Support\Money::rielLabel($invoice->total(), $invoice->rate()) }}
+                · balance {{ \App\Support\Money::rielLabel($invoice->balance(), $invoice->rate()) }}
+            </div>
         </div></div>
     </div>
 </div>
 
 <div class="card mb-3">
-    <div class="card-header bg-white fw-semibold">Line items</div>
+    <div class="card-header bg-white fw-semibold">Line items <span class="text-muted small fw-normal ms-1">each amount is shown in the currency that fee was billed in</span></div>
     <div class="table-responsive">
         <table class="table align-middle mb-0">
             <thead class="table-light">
@@ -194,12 +193,17 @@
                     <tr>
                         <td>{{ $item->description }}</td>
                         <td class="text-center">{{ $item->quantity }}</td>
-                        <td class="text-end">${{ number_format((float) $item->unit_price, 2) }}</td>
+                        <td class="text-end">{{ $item->unitPriceLabel() }}</td>
                         <td class="text-end {{ (float) $item->discount > 0 ? 'text-success' : 'text-muted' }}">
                             {{ (float) $item->discount > 0 ? '-' . $item->discountLabel() : '—' }}
                         </td>
                         <td><span class="badge text-bg-light border">{{ $item->methodLabel() }}</span></td>
-                        <td class="text-end">${{ number_format($item->net(), 2) }}</td>
+                        <td class="text-end">
+                            {{ $item->netLabel() }}
+                            @if($item->isRiel())
+                                <div class="text-muted small">${{ number_format($item->net(), 2) }}</div>
+                            @endif
+                        </td>
                     </tr>
                 @empty
                     <tr><td colspan="6" class="text-muted text-center py-3">No line items.</td></tr>
@@ -253,7 +257,9 @@
                         <td>{{ \App\Models\Payment::METHODS[$payment->method] ?? $payment->method }}</td>
                         <td>{{ $payment->reference ?: '—' }}</td>
                         <td>{{ $payment->receiver->name ?? '—' }}</td>
-                        <td class="text-end fw-semibold">${{ number_format((float) $payment->amount, 2) }}</td>
+                        <td class="text-end fw-semibold">${{ number_format((float) $payment->amount, 2) }}
+                            <div class="small text-muted fw-normal">{{ $payment->rielLabel() }} @ {{ number_format($payment->rate()) }}</div>
+                        </td>
                         <td class="text-end">
                             <form method="POST" action="{{ route('payments.destroy', $payment) }}" class="d-inline" onsubmit="return confirm('You are about to delete this **payment**. This action cannot be undone. Would you like to proceed?');">
                                 @csrf @method('DELETE')
@@ -279,15 +285,29 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
-                <div class="alert alert-light border small mb-3">Outstanding balance: <strong>${{ number_format($invoice->balance(), 2) }}</strong></div>
+                <div class="alert alert-light border small mb-3">
+                    Outstanding balance: <strong>${{ number_format($invoice->balance(), 2) }}</strong>
+                    <span class="text-muted">({{ \App\Support\Money::rielLabel($invoice->balance()) }})</span>
+                </div>
                 <div class="row g-3">
                     <div class="col-6">
                         <label class="form-label">Payment date <span class="text-danger">*</span></label>
                         <input type="date" name="payment_date" class="form-control" value="{{ old('payment_date', now()->format('Y-m-d')) }}" required>
                     </div>
                     <div class="col-6">
-                        <label class="form-label">Amount ($) <span class="text-danger">*</span></label>
-                        <input type="number" step="0.01" min="0.01" max="{{ $invoice->balance() }}" name="amount" class="form-control" value="{{ old('amount', $invoice->balance()) }}" required>
+                        <label class="form-label">Amount (<span class="pay-sign">{{ \App\Support\Money::sign(old('currency')) }}</span>) <span class="text-danger">*</span></label>
+                        <div class="d-flex gap-1">
+                            <div class="input-group flex-fill">
+                                <span class="input-group-text pay-sign">{{ \App\Support\Money::sign(old('currency')) }}</span>
+                                <input type="number" step="0.01" min="0.01" max="{{ $invoice->balance() }}" name="amount" class="form-control pay-amount" value="{{ old('amount', $invoice->balance()) }}" required>
+                            </div>
+                            <select name="currency" class="form-select pay-currency flex-shrink-0" style="width: 5.5rem" aria-label="Currency of the amount typed">
+                                @foreach(\App\Support\Money::CURRENCIES as $code => $sign)
+                                    <option value="{{ $code }}" @selected(old('currency', 'USD') === $code)>{{ $code }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div class="form-text pay-hint">—</div>
                     </div>
                     <div class="col-12">
                         <label class="form-label">Collected by</label>
@@ -326,12 +346,18 @@
 <script>
 (function () {
     var owed = @json(collect($breakdown)->map(fn (array $row) => ['label' => $row['label'], 'balance' => max(0, $row['balance'])])->values()->all());
-    var amountInput = document.querySelector('#paymentModal input[name="amount"]');
+    var rate = @json(\App\Support\Money::rate());
+    var balance = @json(round((float) $invoice->balance(), 2));
+    var amountInput = document.querySelector('#paymentModal .pay-amount');
+    var currencySel = document.querySelector('#paymentModal .pay-currency');
     var preview = document.getElementById('splitPreview');
     if (!amountInput || !preview) { return; }
 
+    function inRiel() { return currencySel && currencySel.value === 'KHR'; }
+    function usdValue() { return inRiel() ? (parseFloat(amountInput.value) || 0) / rate : (parseFloat(amountInput.value) || 0); }
+
     function render() {
-        var left = parseFloat(amountInput.value) || 0;
+        var left = usdValue();
         var parts = [];
         owed.forEach(function (channel) {
             if (left <= 0 || channel.balance <= 0) { return; }
@@ -340,9 +366,34 @@
             parts.push(channel.label + ': $' + take.toFixed(2));
         });
         preview.textContent = parts.length ? parts.join('  ·  ') : '—';
+
+        var usd = usdValue();
+        document.querySelector('#paymentModal .pay-hint').textContent = inRiel()
+            ? '= $' + usd.toFixed(2) + ' at ' + rate.toLocaleString('en-US') + ' ៛/USD'
+            : '≈ ៛' + Math.round(usd * rate).toLocaleString('en-US') + ' at ' + rate.toLocaleString('en-US') + ' ៛/USD';
+    }
+
+    function syncCurrency(from) {
+        var sign = inRiel() ? '៛' : '$';
+        document.querySelectorAll('#paymentModal .pay-sign').forEach(function (el) { el.textContent = sign; });
+        amountInput.max = inRiel() ? Math.ceil(balance * rate) : balance;
+        if (from && from !== currencySel.value) {
+            var typed = parseFloat(amountInput.value);
+            if (!isNaN(typed)) { amountInput.value = inRiel() ? Math.round(typed * rate) : Math.round(typed / rate * 100) / 100; }
+        }
+    }
+
+    var enteredIn = currencySel ? currencySel.value : 'USD';
+    if (currencySel) {
+        currencySel.addEventListener('change', function () {
+            syncCurrency(enteredIn);
+            enteredIn = currencySel.value;
+            render();
+        });
     }
 
     amountInput.addEventListener('input', render);
+    syncCurrency(null);
     render();
 })();
 </script>
@@ -352,13 +403,19 @@
 <style>
     .invoice-print { display: none; }
     @media print {
-        @page { size: A4 portrait; margin: 0; }
+        /* No printer prints to the edge, so the sheet is sized to the printable area instead of
+           the whole page: a border-to-border 210×297 box spills onto a second sheet (or the driver
+           shrinks it) on every dialog except Margins: None. */
+        @page { size: A4 portrait; margin: 8mm; }
         body { background: #fff !important; }
         .sidebar, .topbar, .sidebar-backdrop, .mb-3, .row.g-3.mb-3, .card, .modal, .toast-container, .invoice-print-controls { display: none !important; }
         .main-area, .app-shell, .content, main { display: block !important; margin: 0 !important; padding: 0 !important; width: 100% !important; }
         .invoice-print { display: none !important; color: #111827; font: 9pt Arial, Helvetica, sans-serif; }
-        body.print-invoice #invoicePrint, body.print-receipt #receiptPrint { display: block !important; }
-        .certificate-border { position: relative; width: 210mm; height: 297mm; padding: 13mm 9mm 12mm; border: 3px double #c3952e; overflow: hidden; }
+        body.print-invoice #invoicePrint, body.print-receipt #receiptPrint, body.print-both .invoice-print { display: block !important; }
+        /* Each document is a full A4 sheet, so the invoice page ends before the receipt starts. */
+        body.print-both #invoicePrint { break-after: page; page-break-after: always; }
+        /* No printed frame: the centre wants plain ink, so the class only boxes the sheet. */
+        .certificate-border { position: relative; width: 100%; min-height: 273mm; padding: 13mm 9mm 12mm; overflow: hidden; display: flex; flex-direction: column; }
         .invoice-print-header { display: table; width: 100%; min-height: 37mm; }
         .school-contact, .invoice-meta { display: table-cell; vertical-align: top; }
         .school-contact { width: 62%; line-height: 1.55; }
@@ -389,7 +446,9 @@
         .invoice-lower { width: 100%; min-height: 18mm; margin-top: 3mm; }
         .amount-words { width: 100%; font-size: 8pt; line-height: 1.7; padding-top: 1mm; }
         .invoice-note { margin-top: 5mm; line-height: 1.8; }
-        .signature-area { position: absolute; left: 9mm; right: 9mm; bottom: 39mm; display: flex; justify-content: space-between; gap: 20mm; width: calc(100% - 18mm); font-size: 8pt; }
+        /* Stays at the foot of a short invoice and pushes the sheet taller instead of overlapping
+           the fee table when an invoice has many lines. */
+        .signature-area { margin-top: auto; display: flex; justify-content: space-between; gap: 20mm; font-size: 8pt; }
         .signature-area > div { flex: 1 1 0; min-width: 0; text-align: center; }
         .signature-line { width: 100%; margin-top: 20mm; border-top: .3mm dashed #555; text-align: center; padding-top: 1mm; min-height: 5mm; }
     }
@@ -399,12 +458,12 @@
 @push('scripts')
 <script>
     function printFinancialDocument(type) {
-        document.body.classList.remove('print-invoice', 'print-receipt');
-        document.body.classList.add(type === 'receipt' ? 'print-receipt' : 'print-invoice');
+        document.body.classList.remove('print-invoice', 'print-receipt', 'print-both');
+        document.body.classList.add('print-' + type);
         window.print();
     }
     window.addEventListener('afterprint', function () {
-        document.body.classList.remove('print-invoice', 'print-receipt');
+        document.body.classList.remove('print-invoice', 'print-receipt', 'print-both');
     });
 </script>
 @endpush

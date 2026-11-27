@@ -8,6 +8,7 @@ use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use App\Models\Payment;
 use App\Models\Student;
+use App\Support\Money;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -107,7 +108,9 @@ class InvoiceController extends Controller
     {
         abort_if(in_array($invoice->status, ['paid', 'cancelled'], true), 403, 'Paid or cancelled invoices cannot be edited.');
         $data = $request->validate($this->rules());
-        $items = $this->validateItems($request);
+        // Riels typed here are converted at this invoice's own rate, so editing it cannot restate
+        // figures that were already printed.
+        $items = $this->validateItems($request, $invoice->rate());
         $data['discount'] = round(array_sum(array_column($items, 'discount')), 2);
 
         DB::transaction(function () use ($invoice, $data, $items) {
@@ -162,15 +165,17 @@ class InvoiceController extends Controller
         $data = $request->validate([
             'payment_date' => ['required', 'date'],
             'amount' => ['required', 'numeric', 'min:0.01', 'max:99999999'],
+            'currency' => ['nullable', Rule::in(array_keys(Money::CURRENCIES))],
             'reference' => ['nullable', 'string', 'max:100'],
             'notes' => ['nullable', 'string', 'max:2000'],
         ]);
-        if ((float) $data['amount'] > $invoice->balance() + 0.009) {
-            return back()->with('error', 'Payment exceeds the outstanding balance of ' . number_format($invoice->balance(), 2) . '.');
+        $amount = Money::toUsd((float) $data['amount'], $data['currency'] ?? 'USD');
+        if ($amount > $invoice->balance() + 0.009) {
+            return back()->with('error', 'Payment of $' . number_format($amount, 2) . ' exceeds the outstanding balance of $' . number_format($invoice->balance(), 2) . '.');
         }
         // The money is collected through the channels the fee lines were billed in, so the
         // cashier states the amount only and it is spent over those lines in order.
-        $chunks = $invoice->splitByMethods((float) $data['amount']);
+        $chunks = $invoice->splitByMethods($amount);
         if (! $chunks) {
             return back()->with('error', 'Add at least one line item before recording a payment.');
         }
@@ -258,15 +263,18 @@ class InvoiceController extends Controller
     }
 
     /**
-     * Normalize the submitted lines, turning each per-line discount into dollars.
+     * Normalize the submitted lines into dollars, whichever currency they were typed in.
      *
      * @return list<array<string, mixed>>
      */
-    private function validateItems(Request $request): array
+    private function validateItems(Request $request, ?float $rate = null): array
     {
+        $rate = $rate ?? Money::rate();
         $validated = $request->validate([
+            'amount_currency' => ['nullable', Rule::in(array_keys(Money::CURRENCIES))],
             'items' => ['required', 'array', 'min:1'],
             'items.*.description' => ['required', 'string', 'max:255'],
+            'items.*.currency' => ['nullable', Rule::in(array_keys(Money::CURRENCIES))],
             'items.*.quantity' => ['required', 'integer', 'min:1', 'max:10000'],
             'items.*.unit_price' => ['required', 'numeric', 'min:0', 'max:99999999'],
             'items.*.payment_method' => ['required', Rule::in(array_keys(Payment::METHODS))],
@@ -274,27 +282,37 @@ class InvoiceController extends Controller
             'items.*.discount_type' => ['required', Rule::in(array_keys(InvoiceItem::DISCOUNT_UNITS))],
         ]);
 
+        // One switch above the table sets the currency for every line that has no choice of its own.
+        $defaultCurrency = $validated['amount_currency'] ?? 'USD';
         $items = [];
 
         foreach ($validated['items'] as $key => $item) {
-            $amount = round((int) $item['quantity'] * (float) $item['unit_price'], 2);
-            $value = (float) ($item['discount'] ?? 0);
-            $discount = $item['discount_type'] === 'percent'
-                ? round($amount * min($value, 100) / 100, 2)
-                : round($value, 2);
+            $currency = $item['currency'] ?? $defaultCurrency;
+            $typedPrice = round((float) $item['unit_price'], 2);
+            $typedDiscount = round((float) ($item['discount'] ?? 0), 2);
+            $isPercent = $item['discount_type'] === 'percent';
+
+            $unitPrice = Money::toUsd($typedPrice, $currency, $rate);
+            $amount = round((int) $item['quantity'] * $unitPrice, 2);
+            $discount = $isPercent
+                ? round($amount * min($typedDiscount, 100) / 100, 2)
+                : Money::toUsd($typedDiscount, $currency, $rate);
 
             if ($discount > $amount) {
                 throw ValidationException::withMessages([
-                    "items.$key.discount" => "The discount on \"{$item['description']}\" cannot exceed its amount of " . number_format($amount, 2) . '.',
+                    "items.$key.discount" => 'The discount on "' . $item['description'] . '" cannot exceed its amount of $' . number_format($amount, 2) . '.',
                 ]);
             }
 
             $items[] = [
                 'description' => $item['description'],
+                'currency' => $currency,
                 'quantity' => $item['quantity'],
-                'unit_price' => $item['unit_price'],
+                'unit_price' => $unitPrice,
+                'entered_unit_price' => Money::isRiel($currency) ? $typedPrice : null,
                 'payment_method' => $item['payment_method'],
                 'discount' => $discount,
+                'entered_discount' => (Money::isRiel($currency) && ! $isPercent) ? $typedDiscount : null,
                 'discount_type' => $item['discount_type'],
                 'amount' => $amount,
             ];

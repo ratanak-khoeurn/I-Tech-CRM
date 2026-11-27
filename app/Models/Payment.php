@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Support\CampusContext;
+use App\Support\Money;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -18,12 +19,13 @@ class Payment extends Model
     ];
 
     protected $fillable = [
-        'invoice_id', 'payment_date', 'amount', 'method', 'reference', 'received_by', 'notes',
+        'invoice_id', 'payment_date', 'amount', 'exchange_rate', 'method', 'reference', 'received_by', 'notes',
     ];
 
     protected $casts = [
         'payment_date' => 'date',
         'amount' => 'decimal:2',
+        'exchange_rate' => 'decimal:2',
     ];
 
     protected static function booted(): void
@@ -33,6 +35,25 @@ class Payment extends Model
         static::addGlobalScope('campus', function (Builder $query) {
             CampusContext::whereVisibleInvoice($query);
         });
+
+        // Money collected today is counted at today's rate, and a rate changed later must not
+        // restate what was actually handed over on that date.
+        static::creating(function (self $payment) {
+            $payment->exchange_rate ??= Money::rate();
+        });
+    }
+
+    /** The riel rate this payment was taken at, falling back to today's rate. */
+    public function rate(): float
+    {
+        $rate = (float) $this->exchange_rate;
+
+        return $rate > 0 ? $rate : Money::rate();
+    }
+
+    public function rielLabel(): string
+    {
+        return Money::rielLabel((float) $this->amount, $this->rate());
     }
 
     public function invoice(): BelongsTo

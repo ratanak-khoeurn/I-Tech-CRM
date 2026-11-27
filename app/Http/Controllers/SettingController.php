@@ -31,6 +31,7 @@ class SettingController extends Controller
             'notify_opportunities' => ['nullable', 'boolean'],
             'backup_frequency' => ['nullable', 'string', 'max:50'],
             'backup_retention' => ['nullable', 'integer', 'min:1', 'max:365'],
+            'riel_rate' => ['nullable', 'numeric', 'min:100', 'max:20000'],
         ]);
 
         Setting::set('center_name', $data['center_name'], 'general');
@@ -42,6 +43,7 @@ class SettingController extends Controller
         }
         Setting::set('backup_frequency', $data['backup_frequency'] ?? 'weekly', 'backup');
         Setting::set('backup_retention', (string) ($data['backup_retention'] ?? 30), 'backup');
+        Setting::set('riel_rate', (string) round((float) ($data['riel_rate'] ?? \App\Support\Money::DEFAULT_RATE)), 'finance');
 
         if ($request->hasFile('logo')) {
             Setting::set('center_logo', $request->file('logo')->store('settings', 'public'), 'general');

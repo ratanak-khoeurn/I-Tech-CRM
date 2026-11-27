@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Models\Concerns\StudentCampusScoped;
+use App\Support\Money;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -21,14 +22,32 @@ class Invoice extends Model
 
     protected $fillable = [
         'invoice_number', 'student_id', 'student_course_id', 'fee_structure_id', 'issue_date', 'due_date',
-        'status', 'discount', 'notes', 'created_by',
+        'status', 'discount', 'exchange_rate', 'notes', 'created_by',
     ];
 
     protected $casts = [
         'issue_date' => 'date',
         'due_date' => 'date',
         'discount' => 'decimal:2',
+        'exchange_rate' => 'decimal:2',
     ];
+
+    protected static function booted(): void
+    {
+        // A later rate change in Settings must not rewrite money that was already billed, so the
+        // invoice keeps the rate of the day it was raised.
+        static::creating(function (self $invoice) {
+            $invoice->exchange_rate ??= Money::rate();
+        });
+    }
+
+    /** The riel rate this invoice's figures were quoted at, falling back to today's rate. */
+    public function rate(): float
+    {
+        $rate = (float) $this->exchange_rate;
+
+        return $rate > 0 ? $rate : Money::rate();
+    }
 
     public function student(): BelongsTo
     {
