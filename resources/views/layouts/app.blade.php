@@ -61,6 +61,10 @@
                         class="nav-link {{ request()->routeIs('attendance.finger') ? 'active' : '' }}">
                         <i class="bi bi-fingerprint"></i> Finger Scan
                     </a>
+                    <a href="{{ route('attendance.class') }}"
+                        class="nav-link {{ request()->routeIs('attendance.class') ? 'active' : '' }}">
+                        <i class="bi bi-person-check"></i> Class Register
+                    </a>
                 @endif
 
                 @if (auth()->user()->isSuperAdmin())

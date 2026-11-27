@@ -10,6 +10,7 @@ use App\Http\Controllers\Auth\RegisterController;
 use App\Http\Controllers\BackupController;
 use App\Http\Controllers\BatchController;
 use App\Http\Controllers\CampusController;
+use App\Http\Controllers\ClassAttendanceController;
 use App\Http\Controllers\CommunicationController;
 use App\Http\Controllers\CourseController;
 use App\Http\Controllers\CourseCategoryController;
@@ -82,6 +83,8 @@ Route::middleware('auth')->group(function () {
         Route::get('/', [AttendanceController::class, 'index'])->name('index');
         Route::get('/face', [AttendanceController::class, 'index'])->name('face');
         Route::get('/finger', [AttendanceController::class, 'index'])->name('finger');
+        Route::get('class', [ClassAttendanceController::class, 'index'])->name('class');
+        Route::post('class', [ClassAttendanceController::class, 'store'])->name('class.store');
         Route::get('export', [AttendanceController::class, 'export'])->name('export');
         Route::post('/scan', [AttendanceController::class, 'scan'])->name('scan');
         Route::get('/device-template', [DeviceAttendanceController::class, 'template'])->name('device-template');

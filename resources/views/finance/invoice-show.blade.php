@@ -403,19 +403,22 @@
 <style>
     .invoice-print { display: none; }
     @media print {
-        /* No printer prints to the edge, so the sheet is sized to the printable area instead of
-           the whole page: a border-to-border 210×297 box spills onto a second sheet (or the driver
-           shrinks it) on every dialog except Margins: None. */
+        /* No printer prints to the edge, so the sheet is sized to the printable area instead of the
+           whole page. The dialog can take back more than the 8mm below (Margins: Default plus headers
+           and footers reserves roughly 20mm each side), so the sheet stays well under even that: a
+           sheet taller than the content box silently prints as two pages, one of them nearly empty. */
         @page { size: A4 portrait; margin: 8mm; }
         body { background: #fff !important; }
-        .sidebar, .topbar, .sidebar-backdrop, .mb-3, .row.g-3.mb-3, .card, .modal, .toast-container, .invoice-print-controls { display: none !important; }
+        /* .alert matters: right after "Record payment" the page carries a success flash, and that
+           box above the sheet is enough to push the document onto a second, nearly empty page. */
+        .sidebar, .topbar, .sidebar-backdrop, .mb-3, .row.g-3.mb-3, .card, .modal, .toast-container, .invoice-print-controls, .alert { display: none !important; }
         .main-area, .app-shell, .content, main { display: block !important; margin: 0 !important; padding: 0 !important; width: 100% !important; }
         .invoice-print { display: none !important; color: #111827; font: 9pt Arial, Helvetica, sans-serif; }
         body.print-invoice #invoicePrint, body.print-receipt #receiptPrint, body.print-both .invoice-print { display: block !important; }
         /* Each document is a full A4 sheet, so the invoice page ends before the receipt starts. */
         body.print-both #invoicePrint { break-after: page; page-break-after: always; }
         /* No printed frame: the centre wants plain ink, so the class only boxes the sheet. */
-        .certificate-border { position: relative; width: 100%; min-height: 273mm; padding: 13mm 9mm 12mm; overflow: hidden; display: flex; flex-direction: column; }
+        .certificate-border { position: relative; width: 100%; min-height: 250mm; padding: 13mm 9mm 12mm; overflow: hidden; display: flex; flex-direction: column; }
         .invoice-print-header { display: table; width: 100%; min-height: 37mm; }
         .school-contact, .invoice-meta { display: table-cell; vertical-align: top; }
         .school-contact { width: 62%; line-height: 1.55; }
